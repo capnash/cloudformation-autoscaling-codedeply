@@ -1,0 +1,338 @@
+{
+    "AWSTemplateFormatVersion" : "2010-09-09",
+
+    "Description" : "Create Combination",
+
+    "Parameters" : {
+        "servername" : {
+            "Description" : "The name of the server,same as parameter key name",
+            "Type" : "String"
+        },
+        "TGPort" : {
+            "Description" : "The port of Target Group",
+            "Default" : "2004",
+            "Type":"Number",
+            "AllowedValues" : [ "2004", "2005" ]
+        },
+        "LBListener" : {
+            "Description" : "The port of LB Listener",
+            "Default" : "3004",
+            "Type":"Number",
+            "AllowedValues" : [ "3004", "3005" ]
+        },
+        "keyname": {
+            "Description" : "Name of an existing EC2 KeyPair to enable SSH access to the instances",
+            "Type": "AWS::EC2::KeyPair::KeyName",
+            "ConstraintDescription" : "must be the name of an existing EC2 KeyPair."
+        },
+        "TestSubnet1" : {
+            "Description" : "Subnet IDs for LoadBalancer",
+            "Type" : "AWS::EC2::Subnet::Id",
+            "Default" : "subnet-0befb12378a6e3531"
+        },
+        "TestSubnet2" : {
+            "Description" : "Subnet IDs for AutoScaling",
+            "Type" : "List<AWS::EC2::Subnet::Id>",
+            "Default" : "subnet-0befb12378a6e3531"
+        },
+        "TestVPC" : {
+            "Description" : "VPC ID",
+            "Type" : "AWS::EC2::VPC::Id",
+            "Default" : "vpc-03ba294c7f063b508"
+        },
+        "WebServerCapacity" : {
+            "Default": "2",
+            "Description" : "The initial number of WebServer instances",
+            "Type": "Number",
+            "MinValue": "1",
+            "MaxValue": "3",
+            "ConstraintDescription" : "must be between 1 and 3 EC2 instances."
+        },
+        "CPUPolicyTargetValue":{
+            "Description" : "The target value of CPU",
+            "Type":"Number",
+            "Default": "50"
+          },
+        "WebSG" : {
+            "Description" : "SG for instance",
+            "Default" : "sg-0827baa123133ff52",
+            "Type" : "AWS::EC2::SecurityGroup::Id",
+            "ConstraintDescription" : "must be existing SG."
+        },
+        "InstanceType" : {
+            "Description" : "Web Server EC2 instance type",
+            "Type" : "String",
+            "Default" : "t2.medium",
+            "AllowedValues" : [ "t2.medium", "t2.large", "m1.small", "m4.large", "m4.xlarge"],
+            "ConstraintDescription" : "must be a valid EC2 instance type."
+        },
+        "S3Bucket" : {
+            "Description" : "S3 Bucket that stores the deployment bundle",
+            "Type" : "String"
+        },
+          
+        "S3Key" : {
+            "Description" : "S3 Object key that points to the deployment bundle",
+            "Type" : "String"
+        }
+    },
+
+    "Mappings" : {
+        "AWSRegion2AMI" : {
+          "ap-southeast-2"       : {"Windows2019r2" : "ami-09a868b800080436e", "Windows2016r2" : "ami-05f1bac3bdba6d300"},
+          "us-east-1"            : {"Windows2019r2" : "ami-02642c139a9dfb378", "Windows2016r2" : "ami-07dcc3822b6f2bdbe"}
+        }  
+      },
+
+    "Resources" : {
+        "WTInstanceProfile" : {
+            "Type" : "AWS::IAM::InstanceProfile",
+            "Properties" : {
+              "Path" : "/",
+              "Roles" : ["EC2CodeDepoly"]
+            }
+        },
+        "TestLB" : {
+            "Type" : "AWS::ElasticLoadBalancingV2::LoadBalancer",
+            "Properties" : {
+                "Scheme" : "internal",
+                "Subnets" : [ {"Ref": "TestSubnet1"} ],
+                "Type" : "network"
+            }
+        },
+        "TestTG" : {
+            "Type" : "AWS::ElasticLoadBalancingV2::TargetGroup",
+            "Properties" : {
+                "Port": { "Ref" : "TGPort" },
+                "Protocol": "TCP",
+                "VpcId": { "Ref" : "TestVPC" }
+            }
+        },
+        "TestLBListener" : {
+            "Type" : "AWS::ElasticLoadBalancingV2::Listener",
+            "Properties" : {
+                "DefaultActions" : [{
+                    "Type" : "forward",
+                    "TargetGroupArn" : { "Ref" : "TestTG" }
+                }],
+                "LoadBalancerArn" : {"Ref" : "TestLB"},
+                "Port" : { "Ref" : "LBListener" },
+                "Protocol" : "TCP"
+            }
+        },
+        "WebServerGroup" : {
+            "Type" : "AWS::AutoScaling::AutoScalingGroup",
+            "Properties" : {
+              "VPCZoneIdentifier" : { "Ref" : "TestSubnet2" },
+              "LaunchConfigurationName" : { "Ref" : "WebLC" },
+              "MinSize" : "2",
+              "MaxSize" : "5",
+              "DesiredCapacity" : { "Ref" : "WebServerCapacity" },
+              "NewInstancesProtectedFromScaleIn" : true,
+              "TargetGroupARNs" : [ { "Ref" : "TestTG" } ]
+            },
+            "CreationPolicy": {
+                "ResourceSignal": {
+                  "Count": { "Ref" : "WebServerCapacity" },
+                  "Timeout": "PT15M"
+                }
+            }    
+        },
+        "WebLC" : {
+            "Type" : "AWS::AutoScaling::LaunchConfiguration",
+            "Metadata" : {
+                "AWS::CloudFormation::Init" : {
+                  "config" : {
+                    "files" : {
+                        "c:\\temp\\vc_redist.x86.exe" : {
+                            "source" : "https://aka.ms/vs/16/release/vc_redist.x86.exe"
+                        },
+                        "c:\\temp\\vc_redist.x64.exe" : {
+                            "source" : "https://aka.ms/vs/16/release/vc_redist.x64.exe"
+                        },
+                        "c:\\temp\\ndp.exe" : {
+                            "source" : "https://go.microsoft.com/fwlink/?LinkId=2085155"
+                        },
+                        "c:\\temp\\codedeploy-agent.msi" : {
+                            "source" : "https://aws-codedeploy-us-east-1.s3.amazonaws.com/latest/codedeploy-agent.msi"
+                        },
+                        "c:\\temp\\awscli.msi" : {
+                            "source" : "https://awscli.amazonaws.com/AWSCLIV2.msi"
+                        },
+                        "c:\\temp\\configuration.json" : {
+                            "content" : { "Fn::Join" : ["", [
+                                "{","\n",
+                                "   \"parameterkey\" : \"",{ "Ref" : "servername" },"\",","\n",
+                                "   \"wtregion\" : \"",{ "Ref" : "AWS::Region" },"\"","\n",
+                                "}"
+                            ]]
+                            }
+                        },
+                        "c:\\temp\\init.ps1" : {
+                            "content" : { "Fn::Join" : ["", [
+                                "Set-NetFirewallProfile -Enabled False","\n",
+                                "Start-Process -FilePath c:\\temp\\vc_redist.x86.exe -ArgumentList \"/s\"","\n",
+                                "Start-Process -FilePath c:\\temp\\vc_redist.x64.exe -ArgumentList \"/s\"","\n",
+                                "Start-Process -FilePath C:\\temp\\ndp.exe -ArgumentList \"/q /norestart\" -Wait -Verb RunAs","\n",
+                                "Set-ExecutionPolicy RemoteSigned","\n",
+                                "Import-Module AWSPowerShell","\n",
+                                "c:\\temp\\codedeploy-agent.msi /quiet /l c:\\temp\\host-agent-install-log.txt","\n",
+                                "mkdir c:\\temp2"
+                            ]]
+                            }
+                        }
+                    },
+                    "commands" : {
+                        "01_install" : {
+                            "command" : "powershell.exe c:\\temp\\init.ps1"
+                        }
+                    }
+                  }
+                }
+            },
+            "Properties" : {
+                "InstanceType" : { "Ref" : "InstanceType"},
+                "ImageId" : { "Fn::FindInMap" : [ "AWSRegion2AMI", { "Ref" : "AWS::Region" }, "Windows2019r2" ]},
+                "IamInstanceProfile" : {"Ref" : "WTInstanceProfile"},
+                "SecurityGroups" : [ { "Ref" : "WebSG"} ],
+                "KeyName" : { "Ref" : "keyname"},
+                "UserData"        : {
+                    "Fn::Base64": {
+                      "Fn::Join": [
+                        "",
+                        [
+                            "<powershell>\n",
+                            "mkdir c:\\temp\n",
+                            "$dlurl = \"https://awscli.amazonaws.com/AWSCLIV2.msi\"","\n",
+                            "$installerPath = Join-Path $env:TEMP (Split-Path $dlurl -Leaf)","\n",
+                            "Invoke-WebRequest $dlurl -OutFile $installerPath","\n",
+                            "Start-Process -FilePath msiexec -Args \"/i $installerPath /passive /q\" -Verb RunAs -Wait","\n",
+                            "cfn-init.exe -v -s ", { "Ref" : "AWS::StackId" }, 
+                            " -r WebLC",
+                            " --region ", { "Ref" : "AWS::Region" }, "\n",
+                            "cfn-signal.exe -e 0 --stack ", { "Ref": "AWS::StackName" },
+                            " --resource WebServerGroup ",
+                            " --region ", { "Ref" : "AWS::Region" }, "\n",
+                            "</powershell>"
+                        ]
+                      ]
+                    }
+                }
+            }
+        },
+        "myCPUPolicy":{
+            "Type":"AWS::AutoScaling::ScalingPolicy",
+            "Properties":{
+              "AutoScalingGroupName":{
+                "Ref":"WebServerGroup"
+              },
+              "PolicyType":"TargetTrackingScaling",
+              "TargetTrackingConfiguration":{
+                "PredefinedMetricSpecification":{
+                  "PredefinedMetricType":"ASGAverageCPUUtilization"
+                },
+                "TargetValue":{
+                  "Ref":"CPUPolicyTargetValue"
+                }
+              }
+            }
+        },
+
+
+        "WTApplication" : {
+            "Type" : "AWS::CodeDeploy::Application"
+        },
+          
+        "WTDeploymentConfig" : {
+            "Type" : "AWS::CodeDeploy::DeploymentConfig",
+            "Properties" : {
+              "MinimumHealthyHosts" : {
+                "Type" : "FLEET_PERCENT",
+                "Value" : "75"
+              }
+            }
+        },
+          
+        "WTDeploymentGroup" :     {
+            "Type" : "AWS::CodeDeploy::DeploymentGroup",
+            "Properties" : {
+              "ApplicationName" : {"Ref" : "WTApplication"},
+              "AutoScalingGroups" : [ {"Ref" : "WebServerGroup" } ],
+              "DeploymentConfigName" : "CodeDeployDefault.OneAtATime",
+              "ServiceRoleArn" : "arn:aws:iam::249227871956:role/CodeDeployRole"
+            }   
+        },
+        "wtbeat11" : {
+            "Type" : "AWS::S3::Bucket"
+        },
+
+        "WTCodePipeline": {
+            "DependsOn": [
+               "WebServerGroup"
+            ],
+            "Type": "AWS::CodePipeline::Pipeline",
+            "Properties": {
+                "RoleArn": "arn:aws:iam::249227871956:role/service-role/webapp-codedepoly-pipeline",
+                "ArtifactStore": {
+                  "Location": {"Ref" : "wtbeat11"},
+                  "Type": "S3"
+                },
+                "Stages": [
+                  {
+                     "Name": "Source",
+                     "Actions": [
+                        {
+                           "Name": "Source",
+                           "ActionTypeId": {
+                              "Category": "Source",
+                              "Owner": "AWS",
+                              "Version": 1,
+                              "Provider": "S3"
+                           },
+                           "OutputArtifacts": [
+                              {
+                                 "Name": "staticwebsite"
+                              }
+                           ],
+                           "Configuration": {
+                            "S3Bucket": { "Ref" : "S3Bucket" }, 
+                            "S3ObjectKey": { "Ref" : "S3Key" }
+                           }
+                        }
+                     ]
+                  },
+                  {
+                     "Name": "Deploy",
+                     "Actions": [
+                        {
+                           "Name": "Deploy",
+                           "ActionTypeId": {
+                              "Category": "Deploy",
+                              "Owner": "AWS",
+                              "Version": 1,
+                              "Provider": "CodeDeploy"
+                           },
+                           "InputArtifacts": [
+                              {
+                                 "Name": "staticwebsite"
+                              }
+                           ],
+                           "Configuration": {
+                              "ApplicationName": { "Ref" : "WTApplication" },
+                              "DeploymentGroupName": { "Ref" : "WTDeploymentGroup" }
+                           }
+                        }
+                     ]
+                  }
+                ]
+            }
+        }
+    },
+
+    "Outputs" : {
+        "LBURL" : {
+          "Value" : { "Fn::GetAtt" : [ "TestLB", "DNSName" ]},
+          "Description" : "LB URL"
+        }
+    }
+}
